@@ -55,6 +55,11 @@ def split_success_groups(cohort, metric, fraction):
 def fmt_num(x, digits=0):
     return "N/A" if pd.isna(x) else f"{x:,.{digits}f}"
 
+def median_with_valid_n(cohort, column):
+    """Return a cohort-only median and the field-specific nonmissing count."""
+    values = cohort[column].dropna()
+    return values.median(), len(values)
+
 def feature_means(top, other):
     rows = []
     for f in PRIMARY:
@@ -74,7 +79,7 @@ def add_shortlist(track_id):
 
 def show_profile(row, top, is_in_cohort):
     st.subheader(f"{row['title']} — {row['track_artist']}")
-    st.caption("Inside current comparison cohort" if is_in_cohort else "Outside current comparison cohort — compared against current Top group only")
+    st.caption("Inside current comparison cohort" if is_in_cohort else "Outside current comparison cohort — this dataset track is compared against the current Top group only")
     st.write(f"**Genre:** {row['genre_l1']}  ·  **Year:** {fmt_num(row['release_year'])}  ·  **Popularity:** {fmt_num(row['track_popularity'])}  ·  **Streams:** {fmt_num(row['streams_total'])}" + (" (estimated)" if row["streams_total_estimated"] else ""))
     rows = []
     for f in PRIMARY:
@@ -99,7 +104,7 @@ if "shortlist" not in st.session_state:
     st.session_state.shortlist = []
 
 st.title("🎵 Spotify Track Promotion Strategy")
-st.write("Explore historical track characteristics to identify candidates for **human promotional review**—not to predict hits or allocate budgets.")
+st.write("Explore historical tracks already in this dataset to identify candidates for **human promotional review**—not to predict hits or allocate budgets.")
 if "sample" in found.name.lower():
     st.warning("DEMO: Using the 50-row smoke-test sample. Rankings, distributions, and artist patterns are **not validated against the full dataset**.")
 else:
@@ -115,14 +120,20 @@ with st.sidebar:
     genres = sorted(data["genre_l1"].dropna().astype(str).unique().tolist())
     genre = st.selectbox("Broad genre", ["All genres"] + genres)
     yrange = st.slider("Release years (inclusive)", min_value=y_min, max_value=y_max, value=(y_min, y_max))
-    metric_label = st.selectbox("Success metric", ["Popularity (0–100)", "Streams (includes estimates)"])
-    metric = "track_popularity" if metric_label.startswith("Popularity") else "streams_total"
+    metric_choice = st.selectbox("Success metric", ["Popularity (0–100)", "Streams"])
+    metric = "track_popularity" if metric_choice.startswith("Popularity") else "streams_total"
     fraction = st.selectbox("Top group share", [0.10, 0.20, 0.30], index=1, format_func=lambda x: f"Top {x:.0%}")
     exclude_est = st.checkbox("Exclude estimated streams", disabled=metric != "streams_total")
     if metric != "streams_total":
         exclude_est = False
     unknown_years = int(data["release_year"].isna().sum())
     st.caption(f"Unknown release years excluded: {unknown_years:,}")
+
+metric_label = (
+    "Popularity (0–100)"
+    if metric == "track_popularity"
+    else "Streams (excluding estimates)" if exclude_est else "Streams (includes estimates)"
+)
 
 cohort = filter_cohort(data, genre, yrange[0], yrange[1], metric, exclude_est)
 ranked, top, other, cutoff = split_success_groups(cohort, metric, fraction)
@@ -137,12 +148,18 @@ if cohort.empty:
 
 tab_overview, tab_explorer, tab_artist, tab_shortlist = st.tabs(["Overview", "Track Explorer", "Artist View", "Promotion Shortlist"])
 with tab_overview:
+    median_popularity, popularity_valid_n = median_with_valid_n(cohort, "track_popularity")
+    median_streams, streams_valid_n = median_with_valid_n(cohort, "streams_total")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cohort tracks", f"{len(cohort):,}")
     c2.metric(f"Top {fraction:.0%} tracks", f"{len(top):,}")
-    c3.metric("Median popularity", fmt_num(cohort["track_popularity"].median(), 1))
-    c4.metric("Median streams", fmt_num(cohort["streams_total"].median()))
-    st.caption(f"Top cutoff (last selected {metric_label}): {fmt_num(cutoff, 1 if metric == 'track_popularity' else 0)} · Popularity valid N={cohort['track_popularity'].count():,} · Streams valid N={cohort['streams_total'].count():,}. Streams may include estimates unless excluded when selected as the metric.")
+    c3.metric("Median popularity (cohort)", fmt_num(median_popularity, 1))
+    c4.metric("Median streams (cohort)", fmt_num(median_streams))
+    st.caption(
+        f"Both medians use the current comparison cohort; missing values are ignored per KPI. "
+        f"Top cutoff (last selected {metric_label}): {fmt_num(cutoff, 1 if metric == 'track_popularity' else 0)} · "
+        f"Popularity valid N={popularity_valid_n:,} · Streams valid N={streams_valid_n:,}."
+    )
     st.subheader("Audio feature comparison: Top vs Other")
     means = feature_means(top, other)
     st.plotly_chart(px.bar(means, x="Feature", y="Mean", color="Group", barmode="group", hover_data=["Valid N"], range_y=[0, 1], title="Means of 0–1 audio features"), use_container_width=True)
@@ -165,12 +182,13 @@ with tab_overview:
 
 with tab_explorer:
     st.subheader("Find a track")
-    query = st.text_input("Search track title or artist (full dataset)", key="query")
+    st.info("MVP candidate eligibility: search covers only tracks already in the loaded canonical dataset. Unreleased or other tracks absent from this dataset cannot be searched, uploaded, or compared.")
+    query = st.text_input("Search dataset track title or artist (full dataset)", key="query")
     hits = data
     if query.strip():
         hits = hits[data["title"].fillna("").str.contains(query.strip(), case=False, regex=False) | data["track_artist"].fillna("").str.contains(query.strip(), case=False, regex=False)]
     hits = hits.sort_values(["track_popularity", "canonical_track_id"], ascending=[False, True], na_position="last")
-    st.caption(f"{len(hits):,} matches · showing up to 100 sorted by popularity. Search spans all tracks, including outside cohort.")
+    st.caption(f"{len(hits):,} matches · showing up to 100 sorted by popularity. Search spans the full loaded dataset, including tracks outside the current cohort.")
     st.dataframe(info_table(hits.head(100)), hide_index=True, use_container_width=True)
     if len(hits):
         choices = hits.head(500)
@@ -234,4 +252,4 @@ with tab_shortlist:
         st.download_button("Download shortlist CSV", exported.to_csv(index=False).encode("utf-8-sig"), file_name="promotion_shortlist.csv", mime="text/csv")
 
 st.divider()
-st.caption("Historical descriptive comparison only. Popularity is not a probability; streams may be estimated. No causal effects, hit predictions, or promotional budget recommendations are implied. Selection is stored only in the current Streamlit session.")
+st.caption("Historical descriptive comparison only. Candidate tracks must already be in the loaded dataset; unreleased-track input is not supported. Popularity is not a probability; streams may be estimated. No causal effects, hit predictions, or promotional budget recommendations are implied. Selection is stored only in the current Streamlit session.")
