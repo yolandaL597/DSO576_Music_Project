@@ -195,7 +195,7 @@ with tab_explorer:
         ids = choices["canonical_track_id"].tolist()
         labels = dict(zip(choices["canonical_track_id"], choices["title"].fillna("Untitled") + " — " + choices["track_artist"].fillna("Unknown") + " [" + choices["canonical_track_id"] + "]"))
         selected = st.selectbox("Inspect track", ids, format_func=lambda x: labels[x])
-        row = data.set_index("canonical_track_id").loc[selected]
+        row = data.loc[data["canonical_track_id"] == selected].iloc[0]
         show_profile(row, top, selected in set(cohort["canonical_track_id"]))
 
 with tab_artist:
@@ -220,7 +220,7 @@ with tab_artist:
             st.plotly_chart(px.bar(pd.DataFrame(profile_rows), x="Feature", y="Mean", color="Group", barmode="group", range_y=[0, 1], hover_data=["Valid N"]), use_container_width=True)
             a_ids = songs["canonical_track_id"].tolist()
             a_choice = st.selectbox("Inspect artist track", a_ids, format_func=lambda x: f"{data.set_index('canonical_track_id').loc[x, 'title']} [{x}]")
-            show_profile(data.set_index("canonical_track_id").loc[a_choice], top, True)
+            show_profile(data.loc[data["canonical_track_id"] == a_choice].iloc[0], top, True)
 
 with tab_shortlist:
     st.subheader("Manually selected promotion candidates")
